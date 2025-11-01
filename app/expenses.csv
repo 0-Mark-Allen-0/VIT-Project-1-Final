@@ -1,0 +1,5 @@
+id,date,time,product,canonical_product,category,amount
+1,2025-10-28,16:54:45,chai and samosa,chai and samosa,Food,50
+2,2025-10-28,16:55:03,ola ride,ola ride,Transport,120
+3,2025-10-28,16:55:23,notebook,notebook,Stationery,45
+4,2025-10-28,16:55:57,filter coffee,filter coffee,Food,60
