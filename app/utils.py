@@ -1,7 +1,6 @@
 #v2
 #utils.py
 import streamlit as st
-import speech_recognition as sr
 
 #NEW - Replacing SpeechRecognition w/ st.audio_input and LLM-based transcription 
 import google.generativeai as genai
