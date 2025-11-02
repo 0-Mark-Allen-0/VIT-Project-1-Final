@@ -31,7 +31,7 @@ from storage import (
 )
 from budgeting import get_current_month_key, calculate_budget_status
 from parser import parse_expense, get_category_suggestions, find_similar_products
-from utils import capture_speech, export_data, generate_sample_data
+from utils import transcribe_audio, export_data, generate_sample_data
 
 # -----------------------------
 # Page Configuration
@@ -111,6 +111,12 @@ if "pending_category_confirmation" not in st.session_state:
     st.session_state.pending_category_confirmation = None
 if "category_suggestions" not in st.session_state:
     st.session_state.category_suggestions = []
+
+    # --- ADD THESE TWO LINES ---
+if "parsed_items_to_save" not in st.session_state:
+    st.session_state.parsed_items_to_save = None
+if "parse_error" not in st.session_state:
+    st.session_state.parse_error = None
 
 # -----------------------------
 # Sidebar UI (Redesigned)
@@ -346,6 +352,33 @@ with tab_add:
         else:
             st.error("❌ Could not save expense(s). Please try again.")
 
+    # --- ADD THIS NEW CALLBACK FUNCTION ---
+    def process_audio_data():
+        """
+        Callback function to process audio data.
+        This is triggered by the on_change event of st.audio_input.
+        It runs API calls *before* the script reruns.
+        """
+        audio_data = st.session_state.audio_recorder # Get data from the widget's key
+        if audio_data is None:
+            return # No data to process
+
+        # We can't show a spinner *during* a callback, but the work is done here.
+        transcript = transcribe_audio(audio_data)
+        
+        if transcript:
+            # We can't show st.success here, but we can set the transcript
+            st.session_state.last_transcript = transcript # For user feedback
+            success, items, error_msg = parse_expense(transcript, model, debug=debug)
+            
+            if success:
+                # Set state to save on the *next* script run
+                st.session_state.parsed_items_to_save = items
+            else:
+                st.session_state.parse_error = error_msg
+        else:
+            st.session_state.parse_error = "Could not understand audio. Please try again."
+    
     st.markdown("### 📝 Add New Expense")
     st.caption("Use text or voice input to quickly add expenses")
     
@@ -382,41 +415,29 @@ with tab_add:
     with col2:
         st.markdown("#### 🎙️ Voice Input")
         with st.container():
-            st.info("💡 **How to use:**\n1. Click 'Start Recording'\n2. Speak your expense\n3. Click 'Parse & Save'")
+            st.info("💡 **How to use:**\n1. Click the microphone\n2. Speak your expense\n3. Stop recording")
             
-            if st.button("🎤 Start Recording", use_container_width=True, type="primary"):
-                with st.spinner("🎧 Listening..."):
-                    transcript = capture_speech()
-                    if transcript:
-                        st.session_state["last_transcript"] = transcript
-                        st.success("✅ Recording captured!")
-
-            transcript = st.session_state.get("last_transcript", "")
-            st.text_area(
-                "Transcript", 
-                value=transcript, 
-                height=100, 
-                disabled=True,
-                label_visibility="collapsed",
-                placeholder="Your voice input will appear here..."
+            # 1. Add the on_change callback and key
+            audio_data = st.audio_input(
+                "Click to record your expense:", 
+                key="audio_recorder", 
+                on_change=process_audio_data 
             )
+
+            # 2. Show the transcript if the callback set it
+            if st.session_state.last_transcript:
+                st.success(f"🗣️ Heard: \"{st.session_state.last_transcript}\"")
+                st.session_state.last_transcript = "" # Clear it
             
-            st.markdown("<br>", unsafe_allow_html=True)
+            # 3. Check for results set by the callback, then consume them
+            if st.session_state.parsed_items_to_save:
+                items_to_save = st.session_state.parsed_items_to_save
+                st.session_state.parsed_items_to_save = None # Clear state
+                process_and_save(items_to_save, model) # This will trigger the final rerun
             
-            if st.button(
-                "🚀 Parse & Save", 
-                use_container_width=True, 
-                disabled=not bool(transcript.strip()),
-                key="voice_parse"
-            ):
-                with st.spinner("🔍 Analyzing your expense..."):
-                    success, items, error_msg = parse_expense(transcript, model, debug=debug)
-                
-                if success:
-                    st.session_state["last_transcript"] = ""
-                    process_and_save(items, model)
-                else:
-                    st.error(f"❌ {error_msg}")
+            elif st.session_state.parse_error:
+                st.error(f"❌ {st.session_state.parse_error}")
+                st.session_state.parse_error = None # Clear state
 
 with tab_manage:
     st.markdown("### ✏️ Manage Your Expenses")

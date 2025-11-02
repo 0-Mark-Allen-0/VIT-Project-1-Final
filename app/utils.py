@@ -57,34 +57,6 @@ def transcribe_audio(audio_data):
             os.remove("temp_audio.wav")
         return ""
 
-def capture_speech() -> str:
-    """
-    Captures audio from the microphone and transcribes it to text.
-    Handles common errors gracefully.
-    """
-    try:
-        r = sr.Recognizer()
-        with sr.Microphone() as source:
-            st.info("🎙️ Listening… (Auto-stops on silence)")
-            r.adjust_for_ambient_noise(source, duration=0.5)
-            # Increased timeout to give users more time to speak
-            audio = r.listen(source, timeout=10, phrase_time_limit=10)
-        
-        with st.spinner("Transcribing…"):
-            text = r.recognize_google(audio)
-        st.success(f"🗣️ Heard: \"{text}\"")
-        return text
-        
-    except sr.WaitTimeoutError:
-        st.warning("Listening timeout. No speech detected.")
-    except sr.RequestError as e:
-        st.error(f"Speech API request failed: {e}. Check internet connection.")
-    except sr.UnknownValueError:
-        st.error("Could not understand the audio. Please try speaking clearly.")
-    except Exception as e:
-        st.error(f"A microphone error occurred: {e}")
-    return ""
-
 def export_data(df: pd.DataFrame, format_type: str) -> bytes:
     """
     Export a DataFrame to the specified format (CSV, JSON, or Excel).

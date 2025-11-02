@@ -7,37 +7,7 @@
         },
         "notebook": {
             "category": "Stationery",
-            "avg_amount": 45,
-            "count": 1
-        },
-        "uber ride": {
-            "category": "Transport",
-            "avg_amount": 120,
-            "count": 1
-        },
-        "groceries": {
-            "category": "Groceries",
-            "avg_amount": 300,
-            "count": 1
-        },
-        "charger": {
-            "category": "Electronics",
-            "avg_amount": 1500,
-            "count": 1
-        },
-        "sneakers": {
-            "category": "Fashion",
-            "avg_amount": 6500,
-            "count": 1
-        },
-        "diesel": {
-            "category": "Car",
-            "avg_amount": 2000,
-            "count": 1
-        },
-        "tyres": {
-            "category": "Car",
-            "avg_amount": 50000,
+            "avg_amount": 80,
             "count": 1
         }
     },
