@@ -398,6 +398,7 @@ def determine_best_category(text: str, product: str, llm_category: str, model: s
         return fuzzy_cat, 0
     
     # Stage 5: LLM suggestions
+    # This function makes an API call, but it's a fallback.
     suggestions = get_category_suggestions(text, model)
     if suggestions and suggestions[0].get("confidence", 0) > 60:
         return normalize_category(suggestions[0]["category"]), 0
@@ -456,216 +457,134 @@ def safe_json_extract(raw_text: str) -> Dict:
     
     raise ValueError(f"No valid JSON found in text: {cleaned[:200]}...")
 
-max_retries = 3
+# -----------------------------------------------------------------
+# --- CONSOLIDATED PARSING FUNCTION ---
+# -----------------------------------------------------------------
 
-def llm_parse_with_retry(text: str, model: str, debug: bool = False) -> Dict:
-    """Parse a single expense item using an LLM with enhanced prompts and retry logic."""
-    all_categories = get_all_categories()
-    
-    cat_descriptions = "\n".join([f"  - {cat}: {CATEGORY_DESCRIPTIONS.get(cat, '')}" 
-                                   for cat in all_categories])
-    
-    prompt = f"""
-You are an intelligent expense parser specialized in Indian retail and services.
-
-### Objective
-Extract these three fields from the input text:
-1. "product" – short, clear noun phrase describing the item/service
-2. "category" – ONE category from the list below
-3. "amount" – integer amount in rupees (no symbols)
-
-### Available Categories:
-{cat_descriptions}
-
-### Output Format
-Return **strict JSON only**:
-{{"product": "...", "category": "...", "amount": 0}}
-
-### Guidelines
-- NO explanations or text outside JSON
-- "product" should be concise (2-4 words max)
-- Choose the MOST SPECIFIC category that fits
-- Only use "Other" if genuinely unclear
-- Amount must be a plain integer (50, not ₹50)
-- Consider Indian context (e.g., "chai" is tea/coffee in Food)
-
-### Examples
-Input: "bought coffee from cafe for 80rs"
-Output: {{"product": "coffee", "category": "Food", "amount": 80}}
-
-Input: "uber ride to office 120"
-Output: {{"product": "uber ride", "category": "Transport", "amount": 120}}
-
-Input: "notebook and pen 45 rupees"
-Output: {{"product": "notebook and pen", "category": "Stationery", "amount": 45}}
-
-### Input
-"{text}"
-### JSON:
-""".strip()
-
-    for attempt in range(max_retries):
-        try:
-            model_obj = genai.GenerativeModel(model)
-            response = model_obj.generate_content(
-                prompt,
-                generation_config={"temperature": 0}
-            )
-            raw = response.text.strip()
-            if debug: 
-                st.code(f"Attempt {attempt + 1}: {raw}", language="json")
-            
-            data = safe_json_extract(raw)
-            return {
-                "product": (data.get("product") or "item").strip(),
-                "category": normalize_category(data.get("category", "Other")),
-                "amount": int(float(data.get("amount", 0)))
-            }
-        except Exception as e:
-            if debug: 
-                st.warning(f"Attempt {attempt + 1} failed: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(0.5 * (attempt + 1))
-            else:
-                if debug: 
-                    st.error("All LLM attempts for single item failed.")
-                return {"product": "item", "category": "Other", "amount": 0}
-
-def detect_multiple_items(text: str, model: str, debug: bool = False) -> Tuple[bool, List[Dict]]:
-    """Detect and parse multiple items with enhanced prompts and better error handling."""
-    separators = [",", " and ", "&", "+", " also ", " plus "]
-    has_separators = any(sep in text.lower() for sep in separators)
-    amount_patterns = re.findall(r'\d+\s*(?:rs\.?|rupees?|₹)', text.lower())
-    multiple_amounts = len(amount_patterns) > 1
-
-    if not (has_separators or multiple_amounts):
-        return False, []
-
+def llm_unified_parse(text: str, model: str, debug: bool = False) -> Dict:
+    """
+    Performs moderation, multi-item detection, and parsing in a single API call.
+    Returns a structured dictionary:
+    {
+        "status": "success" | "inappropriate" | "error",
+        "reason": "...", // if not success
+        "items": [
+            {"product": "...", "category": "...", "amount": 0},
+            ...
+        ] // if success
+    }
+    """
     all_categories = get_all_categories()
     cat_list = ", ".join(all_categories)
-    
+    cat_descriptions = "\n".join([f"  - {cat}: {CATEGORY_DESCRIPTIONS.get(cat, '')}" 
+                                   for cat in all_categories])
+
     prompt = f"""
-You are an expert expense parser.
-
-### Task
-Analyze if the text contains one or multiple expense items.
-
-### Rules
-1. ONE item → return: {{"multiple": false}}
-2. MULTIPLE items → return:
-   {{
-     "multiple": true,
-     "items": [
-       {{"product": "...", "category": "...", "amount": 0}},
-       ...
-     ]
-   }}
-3. Each item needs:
-   - "product": concise noun phrase (2-4 words)
-   - "category": from {cat_list}
-   - "amount": integer only
-
-### Examples
-Text: "coffee for 20rs and notebook for 10rs"
-→ {{"multiple": true, "items": [{{"product": "coffee", "category": "Food", "amount": 20}}, {{"product": "notebook", "category": "Stationery", "amount": 10}}]}}
-
-Text: "fruits 200rs, notebooks 60rs"
-→ {{"multiple": true, "items": [{{"product": "fruits", "category": "Groceries", "amount": 200}}, {{"product": "notebooks", "category": "Stationery", "amount": 60}}]}}
-
-Text: "coffee 50"
-→ {{"multiple": false}}
-
-Text: "uber 150, sandwich 80, water bottle 20"
-→ {{"multiple": true, "items": [{{"product": "uber ride", "category": "Transport", "amount": 150}}, {{"product": "sandwich", "category": "Food", "amount": 80}}, {{"product": "water bottle", "category": "Groceries", "amount": 20}}]}}
-
-### CRITICAL
-- Return ONLY valid JSON, no explanations
-- Do NOT include markdown code blocks
-- Separate each item with its own amount
-
-### Input
-"{text}"
-### JSON:
-"""
+    You are an expert expense parser and content moderator.
+    Your task is to analyze the user's text and return a structured JSON response.
     
+    ### Step 1: Content Moderation
+    First, classify the text into one of: {INAPPROPRIATE_CATEGORIES}
+    - If the text is NOT "safe", STOP. Return a moderation error.
+    
+    ### Step 2: Expense Parsing
+    If the text is "safe", parse it to find one or more expense items.
+    - Extract "product", "category", and "amount" for each item.
+    - "product" should be a concise noun phrase.
+    - "category" MUST be one of these: {cat_list}
+    - Use these descriptions to help:
+    {cat_descriptions}
+    - "amount" MUST be an integer.
+    
+    ### Output Format: STRICT JSON ONLY
+    - Do NOT include markdown code blocks (```json).
+    - Respond with ONLY the JSON object.
+    
+    # Example 1: Single Safe Item
+    Input: "coffee for 50"
+    Output:
+    {{
+      "status": "success",
+      "items": [
+        {{"product": "coffee", "category": "Food", "amount": 50}}
+      ]
+    }}
+    
+    # Example 2: Multiple Safe Items
+    Input: "uber 120 and a sandwich for 80rs"
+    Output:
+    {{
+      "status": "success",
+      "items": [
+        {{"product": "uber ride", "category": "Transport", "amount": 120}},
+        {{"product": "sandwich", "category": "Food", "amount": 80}}
+      ]
+    }}
+    
+    # Example 3: Inappropriate Content
+    Input: "[Hateful text]"
+    Output:
+    {{
+      "status": "inappropriate",
+      "reason": "hate_speech",
+      "items": []
+    }}
+    
+    # Example 4: No items found
+    Input: "hello"
+    Output:
+    {{
+      "status": "error",
+      "reason": "No expense items found.",
+      "items": []
+    }}
+    
+    ---
+    ### User Input
+    "{text}"
+    
+    ### JSON Output:
+    """
+
     try:
         model_obj = genai.GenerativeModel(model)
         response = model_obj.generate_content(
             prompt,
             generation_config={
                 "temperature": 0,
-                "response_mime_type": "application/json"  # Force JSON response
+                "response_mime_type": "application/json"
             }
         )
         raw_response = response.text.strip()
         
         if debug:
-            st.code(f"Multi-item raw response:\n{raw_response}", language="json")
-        
+            st.code(f"Unified Parser Raw Response:\n{raw_response}", language="json")
+            
         result = safe_json_extract(raw_response)
         
-        if debug:
-            st.json(result)
-
-        if result.get("multiple") and "items" in result and isinstance(result["items"], list):
+        if "status" not in result:
+             raise ValueError("JSON response missing 'status' field.")
+        
+        # Normalize items
+        if result["status"] == "success" and "items" in result:
             valid_items = []
             for item in result["items"]:
                 if "product" in item and "amount" in item:
                     item["category"] = normalize_category(item.get("category", "Other"))
                     item["amount"] = int(item.get("amount", 0))
                     valid_items.append(item)
-            
-            if valid_items:
-                if debug:
-                    st.success(f"✅ Found {len(valid_items)} items")
-                return True, valid_items
-
-    except json.JSONDecodeError as e:
-        if debug:
-            st.error(f"JSON parsing failed: {e}")
-            st.code(raw_response, language="text")
-        st.warning(f"Multi-item parsing failed (JSON error). Falling back to single item mode.")
-        return False, []
-    except Exception as e:
-        if debug:
-            st.error(f"Multi-item parsing error: {e}")
-        st.warning(f"Multi-item parsing failed: {str(e)}. Falling back to single item mode.")
-        return False, []
-
-    return False, []
-
-def check_for_inappropriate_content(text: str, model: str) -> str | None:
-    """Uses the LLM to classify text content."""
-    categories_str = ", ".join(INAPPROPRIATE_CATEGORIES)
-    
-    prompt = f"""
-Classify the following text into one of these moderation categories:
-{categories_str}
-
-### Rules
-- Respond with **only** the category name (lowercase, no punctuation)
-- Choose "safe" if the text is not offensive or inappropriate
-- Do not include explanations or reasoning
-
-Text: "{text}"
-Category:
-"""
-
-    try:
-        model_obj = genai.GenerativeModel(model)
-        response = model_obj.generate_content(
-            prompt,
-            generation_config={"temperature": 0.1}
-        )
-        category = response.text.strip().lower().replace(" ", "_")
-
-        if category in INAPPROPRIATE_CATEGORIES and category != "safe":
-            return category
+            result["items"] = valid_items
         
-        return None
+        return result
+
     except Exception as e:
-        st.warning(f"Content moderation check failed: {e}")
-        return None
+        if debug:
+            st.error(f"Unified Parser Failed: {e}")
+        return {
+            "status": "error",
+            "reason": f"LLM parsing failed: {e}",
+            "items": []
+        }
 
 def llm_get_canonical(product_name: str, existing_names: List[str], model: str) -> str:
     """Uses the LLM to generate a canonical (standard) name for a product."""
@@ -707,23 +626,17 @@ Canonical Name:
         return product_name.lower().strip()
 
 # -----------------------------
-# Main Hybrid Parser (FIXED)
+# Main Hybrid Parser (REFACTORED)
 # -----------------------------
 def parse_expense(text: str, model: str, debug: bool = False) -> Tuple[bool, List[Dict], str]:
     """
-    Enhanced parser with smart suggestions and improved categorization.
+    Enhanced parser using the single unified LLM call.
     """
     text = (text or "").strip()
     if not text:
         return False, [], "Input is empty."
 
-    # 1. Content Moderation
-    inappropriate_category = check_for_inappropriate_content(text, model)
-    if inappropriate_category:
-        reason = inappropriate_category.replace("_", " ").title()
-        return False, [], f"Inappropriate content detected ({reason}). Please be respectful."
-
-    # 2. Custom Category Parsing
+    # 1. Custom Category Parsing (Run this first)
     custom_item, custom_category, remaining_text = parse_custom_category(text)
     if custom_item and custom_category:
         if add_custom_category(custom_category):
@@ -732,88 +645,73 @@ def parse_expense(text: str, model: str, debug: bool = False) -> Tuple[bool, Lis
         amount = parse_amount(remaining_text)
         return True, [{"product": custom_item, "category": custom_category, "amount": amount}], ""
 
-    # 3. Multi-Item Parsing
-    is_multiple, items = detect_multiple_items(text, model, debug)
-    if is_multiple:
+    # 2. Unified LLM Parsing (The ONE big call)
+    parse_result = llm_unified_parse(text, model, debug)
+
+    # 3. Handle Moderation/Errors
+    if parse_result["status"] == "inappropriate":
+        reason = parse_result.get("reason", "content").replace("_", " ").title()
+        return False, [], f"Inappropriate content detected ({reason}). Please be respectful."
+
+    if parse_result["status"] == "error":
+        return False, [], parse_result.get("reason", "Parsing failed.")
+    
+    # 4. Process Successful Parse
+    if parse_result["status"] == "success" and parse_result.get("items"):
         processed_items = []
-        for item in items:
-            if isinstance(item, dict) and item.get("product") and isinstance(item.get("amount"), int):
-                best_cat, suggested_amt = determine_best_category(
-                    text, 
-                    item["product"], 
-                    item.get("category", "Other"),
+        
+        # We need to loop through all items returned by the LLM
+        for item in parse_result["items"]:
+            if not (isinstance(item, dict) and item.get("product") and "amount" in item):
+                continue # Skip malformed items
+
+            final_product = item["product"]
+            
+            # Check if user provided an amount in the input
+            user_provided_amount = item["amount"] > 0
+            
+            # Try smart suggestions to get category AND amount
+            smart_match = get_smart_suggestions(final_product) # Use product name for better match
+            
+            if smart_match and smart_match.get("confidence", 0) >= 2:
+                # We have a good historical match!
+                best_category = smart_match["category"]
+                suggested_amount = smart_match["amount"]
+            else:
+                # No smart match, use multi-stage determination (no API call)
+                best_category, suggested_amount = determine_best_category(
+                    text,
+                    final_product,
+                    item["category"],
                     model
                 )
-                item["category"] = best_cat
-                # Use suggested amount if current amount is 0
-                if item["amount"] == 0 and suggested_amt > 0:
-                    item["amount"] = suggested_amt
-                processed_items.append(item)
+            
+            # Prioritize user's explicit amount
+            final_amount = 0
+            if user_provided_amount:
+                final_amount = item["amount"]
+            elif suggested_amount > 0:
+                final_amount = suggested_amount # Use suggestion if user gave no amount
+            
+            final_item = {
+                "product": final_product,
+                "category": best_category,
+                "amount": final_amount
+            }
+
+            # Amount validation
+            if final_item["amount"] <= 0:
+                # This item is invalid, but others in a multi-parse might be ok
+                # We will just skip it.
+                continue
+
+            processed_items.append(final_item)
+
         if processed_items:
-            if debug:
-                st.success(f"✅ Successfully parsed {len(processed_items)} items")
             return True, processed_items, ""
-
-    # 4. Single-Item Parsing with Smart Suggestions
-    llm_result = llm_parse_with_retry(text, model, debug)
-    heuristic_result = {
-        "product": heuristic_item(text),
-        "category": keyword_category(text),
-        "amount": parse_amount(text)
-    }
-
-    # Combine results
-    final_product = llm_result["product"] if llm_result["product"] not in ["item", "Item"] else heuristic_result["product"]
-    
-    # CRITICAL: Check if user provided an amount in the input
-    user_provided_amount = llm_result["amount"] > 0 or heuristic_result["amount"] > 0
-    
-    # Try smart suggestions to get category AND amount
-    smart_match = get_smart_suggestions(text)
-    
-    if smart_match and smart_match.get("confidence", 0) >= 2:
-        # We have a good historical match!
-        if debug:
-            st.info(f"✨ Smart suggestion found: {smart_match['product']} → {smart_match['category']} (₹{smart_match['amount']})")
-        
-        best_category = smart_match["category"]
-        suggested_amount = smart_match["amount"]
-    else:
-        # No smart match, use multi-stage determination
-        best_category, suggested_amount = determine_best_category(
-            text,
-            final_product,
-            llm_result["category"],
-            model
-        )
-    
-    # FIXED: Prioritize user's explicit amount over suggestions
-    final_amount = 0
-    if user_provided_amount:
-        # User provided an amount - ALWAYS use it (respect user input)
-        final_amount = llm_result["amount"] if llm_result["amount"] > 0 else heuristic_result["amount"]
-        if debug and suggested_amount > 0:
-            st.info(f"ℹ️ Using your amount (₹{final_amount}) instead of suggested (₹{suggested_amount})")
-    else:
-        # No amount in input - use smart suggestion
-        if suggested_amount > 0:
-            final_amount = suggested_amount
-            if debug:
-                st.success(f"💡 Auto-filled amount: ₹{final_amount} (from history)")
-    
-    final_item = {
-        "product": final_product,
-        "category": best_category,
-        "amount": final_amount
-    }
-
-    # Amount validation: Only enforce if user didn't provide amount AND no smart suggestion
-    if final_item["amount"] <= 0:
-        if smart_match:
-            # Smart match exists but amount is still 0 (shouldn't happen, but handle it)
-            return False, [], "⚠️ Smart suggestion found but amount is invalid. Please include an amount."
         else:
-            # No smart match and no amount in input
-            return False, [], "⚠️ Please include a monetary amount (e.g., 'rent 15000' or 'coffee 50rs')\n\n💡 Tip: After adding this expense once with an amount, you can use just the product name next time!"
+            # We had a "success" status but no valid items with amounts
+            return False, [], "⚠️ Please include a monetary amount (e.g., 'coffee 50rs')"
 
-    return True, [final_item], ""
+    # Fallback for unexpected cases
+    return False, [], "Could not parse expense. Please try rephrasing."

@@ -1,1 +1,9 @@
 id,date,time,product,canonical_product,category,amount
+1,2025-11-02,18:19:36,coffee,coffee,Food,50
+2,2025-11-02,18:22:18,notebook,notebook,Stationery,45
+3,2025-11-02,18:22:18,uber ride,uber ride,Transport,120
+4,2025-11-02,18:22:18,groceries,groceries,Groceries,300
+5,2025-11-02,18:22:48,Charger,charger,Electronics,1500
+6,2025-11-02,18:23:06,Sneakers,sneakers,Fashion,6500
+7,2025-11-02,18:23:25,Diesel,diesel,Car,2000
+8,2025-11-02,18:23:46,new tyres,tyres,Car,50000

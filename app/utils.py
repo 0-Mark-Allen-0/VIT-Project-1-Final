@@ -2,6 +2,11 @@
 #utils.py
 import streamlit as st
 import speech_recognition as sr
+
+#NEW - Replacing SpeechRecognition w/ st.audio_input and LLM-based transcription 
+import google.generativeai as genai
+import os
+
 import pandas as pd
 import io
 import random
@@ -9,6 +14,48 @@ import datetime as dt
 from datetime import timedelta
 
 from config import CANON_CATEGORIES
+
+#NEW - Replacing SpeechRecognition w/ st.audio_input and LLM-based transcription 
+def transcribe_audio(audio_data):
+    """
+    Sends audio data to the Gemini API for transcription.
+
+    Note: This requires a model that supports audio, 
+    like gemini-1.5-pro or gemini-1.5-flash.
+    """
+
+    try:
+        # You must save the in-memory audio bytes to a temporary file
+        # for the API to read it.
+        with open("temp_audio.wav", "wb") as f:
+            f.write(audio_data.getbuffer())
+
+        # 1. Upload the file
+        # Use the model name from your config if you like
+        model = genai.GenerativeModel("gemini-2.5-flash") 
+        audio_file = genai.upload_file(path="temp_audio.wav")
+
+        # 2. Send the prompt
+        response = model.generate_content(
+            ["Please transcribe this audio.", audio_file],
+            # Use a specific model tuned for audio if available
+        )
+
+        # 3. Clean up the temp file
+        os.remove("temp_audio.wav")
+
+        if response.text:
+            return response.text
+        else:
+            st.error("Transcription failed. No text returned.")
+            return ""
+
+    except Exception as e:
+        st.error(f"Error during transcription: {e}")
+        # Clean up the file even if it fails
+        if os.path.exists("temp_audio.wav"):
+            os.remove("temp_audio.wav")
+        return ""
 
 def capture_speech() -> str:
     """
