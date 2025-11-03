@@ -535,7 +535,7 @@ def llm_unified_parse(text: str, model: str, debug: bool = False) -> Dict:
     Output:
     {{
       "status": "error",
-      "reason": "No expense items found.",
+      "reason": "No expense items found. Your input is either not found in the Smart Suggestions engine, or does not contain any monetary value",
       "items": []
     }}
     
@@ -626,17 +626,18 @@ Canonical Name:
         return product_name.lower().strip()
 
 # -----------------------------
-# Main Hybrid Parser (REFACTORED)
+# Main Hybrid Parser (REFACTORED) - Smart Suggestions first, followed by LLM
 # -----------------------------
 def parse_expense(text: str, model: str, debug: bool = False) -> Tuple[bool, List[Dict], str]:
     """
-    Enhanced parser using the single unified LLM call.
+    Enhanced parser using a hybrid "fast-path" and "slow-path" (LLM) approach.
     """
     text = (text or "").strip()
     if not text:
         return False, [], "Input is empty."
 
     # 1. Custom Category Parsing (Run this first)
+    # This is a specific user instruction (e.g., "laptop as Electronics")
     custom_item, custom_category, remaining_text = parse_custom_category(text)
     if custom_item and custom_category:
         if add_custom_category(custom_category):
@@ -645,10 +646,40 @@ def parse_expense(text: str, model: str, debug: bool = False) -> Tuple[bool, Lis
         amount = parse_amount(remaining_text)
         return True, [{"product": custom_item, "category": custom_category, "amount": amount}], ""
 
-    # 2. Unified LLM Parsing (The ONE big call)
+    # 2. NEW: Fast-Path Smart Suggestions
+    # We try this *before* the expensive LLM call.
+    # This path is only for simple, amount-less entries (e.g., "coffee")
+    # that have an exact match in our suggestions database.
+    
+    # Heuristic: Did the user provide an amount?
+    if parse_amount(text) == 0:
+        smart_match = get_smart_suggestions(text)
+        
+        # Check for a high-confidence, *exact* match.
+        if (
+            smart_match 
+            and smart_match.get("match_type") == "exact" 
+            and smart_match.get("confidence", 0) >= 1 # At least one past entry
+        ):
+            if debug:
+                st.info("⚡ Fast-Path Smart Suggestion used.")
+            
+            # Create the item using the smart suggestion
+            fast_item = {
+                "product": smart_match["product"],
+                "category": smart_match["category"],
+                "amount": smart_match["amount"]
+            }
+            return True, [fast_item], ""
+
+    # 3. Unified LLM Parsing (The "slow-path" fallback)
+    # If it's complex, multi-item, or a new item, the LLM will handle it.
+    if debug:
+        st.info("🧠 Slow-Path LLM Parser used.")
+        
     parse_result = llm_unified_parse(text, model, debug)
 
-    # 3. Handle Moderation/Errors
+    # 4. Handle Moderation/Errors from LLM
     if parse_result["status"] == "inappropriate":
         reason = parse_result.get("reason", "content").replace("_", " ").title()
         return False, [], f"Inappropriate content detected ({reason}). Please be respectful."
@@ -656,7 +687,7 @@ def parse_expense(text: str, model: str, debug: bool = False) -> Tuple[bool, Lis
     if parse_result["status"] == "error":
         return False, [], parse_result.get("reason", "Parsing failed.")
     
-    # 4. Process Successful Parse
+    # 5. Process Successful LLM Parse
     if parse_result["status"] == "success" and parse_result.get("items"):
         processed_items = []
         

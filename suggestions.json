@@ -4,11 +4,6 @@
             "category": "Food",
             "avg_amount": 50,
             "count": 1
-        },
-        "notebook": {
-            "category": "Stationery",
-            "avg_amount": 80,
-            "count": 1
         }
     },
     "categories": {},

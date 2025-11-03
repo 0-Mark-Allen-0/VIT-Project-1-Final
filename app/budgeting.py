@@ -3,6 +3,9 @@ import datetime as dt
 import pandas as pd
 from typing import Dict
 
+#UPDATE - Fixing "user created budgets not showing up" bug
+from storage import get_all_categories
+
 from config import CANON_CATEGORIES
 
 def get_current_month_key() -> str:
@@ -36,7 +39,10 @@ def calculate_budget_status(df: pd.DataFrame, budgets: Dict) -> Dict:
     monthly_budgets = budgets.get(current_month, {})
     
     status = {}
-    for category in CANON_CATEGORIES:
+
+    all_categories = get_all_categories()
+
+    for category in all_categories:
         budget = monthly_budgets.get(category, 0)
         actual = actual_spending.get(category, 0)
         
